@@ -17,38 +17,12 @@ modelpath="state-spaces/mamba-130m"
 # Load model
 model = MambaLMHeadModel.from_pretrained(
     modelpath,    
-    # device_map={"": accelerator.process_index},
-    # quantization_config=BitsAndBytesConfig(
-    #     load_in_4bit=True,
-    #     bnb_4bit_compute_dtype=torch.bfloat16,
-    #     bnb_4bit_quant_type="nf4",
-    # ),
     dtype=torch.bfloat16,
 )
 
 # Load Tokenizer
 tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
-
-# Add tokens <|im_start|> and <|im_end|>, latter is special eos token, 
 tokenizer.pad_token = tokenizer.eos_token
-# tokenizer.add_tokens(["<|im_start|>"])
-# tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
-# model.resize_token_embeddings(len(tokenizer))
-# model.config.eos_token_id = tokenizer.eos_token_id
-
-# Add adapters to model
-# model = prepare_model_for_kbit_training(model)
-# config = LoraConfig(
-#     r=64, 
-#     lora_alpha=16, 
-#     target_modules = ['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
-#     lora_dropout=0.1, 
-#     bias="none", 
-#     modules_to_save = ["lm_head", "embed_tokens"],
-#     task_type="CAUSAL_LM"
-# )
-# model = get_peft_model(model, config)
-# model.config.use_cache = False
 
 # Load dataset
 dataset = load_dataset("OpenAssistant/oasst_top1_2023-08-25")
@@ -124,6 +98,5 @@ trainer = Trainer(
     eval_dataset=dataset_tokenized["test"],
 )
 
-# model.config.use_cache = False
 trainer.train()
 

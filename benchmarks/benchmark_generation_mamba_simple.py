@@ -43,6 +43,7 @@ print(f"Number of parameters: {sum(p.numel() for p in model.parameters() if p.re
 torch.random.manual_seed(0)
 if args.prompt is None:
     input_ids = torch.randint(1, 1000, (args.batch, args.promptlen), dtype=torch.long, device="cuda")
+    breakpoint()
     attn_mask = torch.ones_like(input_ids, dtype=torch.long, device="cuda")
 else:
     tokens = tokenizer(args.prompt, return_tensors="pt")
