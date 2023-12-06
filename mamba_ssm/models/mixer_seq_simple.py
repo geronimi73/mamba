@@ -8,6 +8,10 @@ from collections import namedtuple
 import torch
 import torch.nn as nn
 
+from torch.nn import CrossEntropyLoss
+
+from transformers import PretrainedConfig
+
 from mamba_ssm.modules.mamba_simple import Mamba, Block
 from mamba_ssm.utils.generation import GenerationMixin
 from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
@@ -206,6 +210,12 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             )
         )
         self.tie_weights()
+        self.config = PretrainedConfig(
+            d_model = d_model,
+            n_layer = n_layer,
+            vocab_size = vocab_size,
+            hidden_size = d_model,
+        )        
 
     def tie_weights(self):
         self.lm_head.weight = self.backbone.embedding.weight
@@ -213,7 +223,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.backbone.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
 
-    def forward(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0):
+    def forward(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0, labels = None):
         """
         "position_ids" is just to be compatible with Transformer generation. We don't use it.
         num_last_tokens: if > 0, only return the logits for the last n tokens
@@ -222,8 +232,38 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         lm_logits = self.lm_head(hidden_states)
-        CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
-        return CausalLMOutput(logits=lm_logits)
+        
+        loss = None
+        if labels is not None:
+            logits = lm_logits
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+            # print(loss, shift_logits, shift_logits.dtype, shift_labels, shift_labels.dtype)
+            return (loss,)
+            
+        else:
+            CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+            return CausalLMOutput(logits=lm_logits)
+
+    # def forward(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0):
+    #     """
+    #     "position_ids" is just to be compatible with Transformer generation. We don't use it.
+    #     num_last_tokens: if > 0, only return the logits for the last n tokens
+    #     """
+    #     hidden_states = self.backbone(input_ids, inference_params=inference_params)
+    #     if num_last_tokens > 0:
+    #         hidden_states = hidden_states[:, -num_last_tokens:]
+    #     lm_logits = self.lm_head(hidden_states)
+    #     CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+    #     return CausalLMOutput(logits=lm_logits)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs):
