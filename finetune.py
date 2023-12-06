@@ -1,5 +1,6 @@
 import torch
 import os
+import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from accelerate import Accelerator
@@ -9,10 +10,12 @@ from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 
 accelerator = Accelerator()
 
+# wandb.init(mode="disabled")
+
 modelpath="state-spaces/mamba-130m"
 
 # Load model
-model = AutoModelForCausalLM.from_pretrained(
+model = MambaLMHeadModel.from_pretrained(
     modelpath,    
     # device_map={"": accelerator.process_index},
     # quantization_config=BitsAndBytesConfig(
@@ -20,32 +23,32 @@ model = AutoModelForCausalLM.from_pretrained(
     #     bnb_4bit_compute_dtype=torch.bfloat16,
     #     bnb_4bit_quant_type="nf4",
     # ),
-    type=torch.bfloat16,
+    dtype=torch.bfloat16,
 )
 
 # Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=False)    # fast tokenizer sometimes ignores the added tokens
+tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
 
 # Add tokens <|im_start|> and <|im_end|>, latter is special eos token, 
-tokenizer.pad_token = "</s>"
-tokenizer.add_tokens(["<|im_start|>"])
-tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
-model.resize_token_embeddings(len(tokenizer))
-model.config.eos_token_id = tokenizer.eos_token_id
+tokenizer.pad_token = tokenizer.eos_token
+# tokenizer.add_tokens(["<|im_start|>"])
+# tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
+# model.resize_token_embeddings(len(tokenizer))
+# model.config.eos_token_id = tokenizer.eos_token_id
 
 # Add adapters to model
-model = prepare_model_for_kbit_training(model)
-config = LoraConfig(
-    r=64, 
-    lora_alpha=16, 
-    target_modules = ['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
-    lora_dropout=0.1, 
-    bias="none", 
-    modules_to_save = ["lm_head", "embed_tokens"],
-    task_type="CAUSAL_LM"
-)
-model = get_peft_model(model, config)
-model.config.use_cache = False
+# model = prepare_model_for_kbit_training(model)
+# config = LoraConfig(
+#     r=64, 
+#     lora_alpha=16, 
+#     target_modules = ['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
+#     lora_dropout=0.1, 
+#     bias="none", 
+#     modules_to_save = ["lm_head", "embed_tokens"],
+#     task_type="CAUSAL_LM"
+# )
+# model = get_peft_model(model, config)
+# model.config.use_cache = False
 
 # Load dataset
 dataset = load_dataset("OpenAssistant/oasst_top1_2023-08-25")
@@ -83,11 +86,11 @@ def collate(elements):
     batch={
         "input_ids": torch.tensor(input_ids),
         "labels": torch.tensor(labels),
-        "attention_mask": torch.tensor(attention_masks)
+        # "attention_mask": torch.tensor(attention_masks)
     }
     return batch
 
-bs=1        # batch size
+bs=32        # batch size
 ga_steps=1  # gradient acc. steps
 epochs=5
 steps_per_epoch=len(dataset_tokenized["train"])//(accelerator.state.num_processes*bs*ga_steps)
@@ -103,11 +106,13 @@ args = TrainingArguments(
     gradient_accumulation_steps=ga_steps,
     num_train_epochs=epochs,
     lr_scheduler_type="constant",
-    optim="paged_adamw_32bit",
-    learning_rate=0.0002,
+    # optim="paged_adamw_32bit",
+    learning_rate=0.0005,
     group_by_length=True,
-    fp16=True,
-    ddp_find_unused_parameters=False,
+    fp16=False,
+    bf16=True,
+    # ddp_find_unused_parameters=False,
+    save_safetensors=False
 )
 
 trainer = Trainer(
@@ -119,6 +124,6 @@ trainer = Trainer(
     eval_dataset=dataset_tokenized["test"],
 )
 
-model.config.use_cache = False
+# model.config.use_cache = False
 trainer.train()
 
