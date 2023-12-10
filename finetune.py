@@ -37,6 +37,24 @@ def forward_with_loss(self, input_ids, position_ids=None, inference_params=None,
         return CausalLMOutput(logits=lm_logits)
 MambaLMHeadModel.forward=forward_with_loss
 
+def resize_token_embeddings(model, new_num_tokens):
+    import torch.nn as nn
+
+    old_embeddings = model.backbone.embedding
+    old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
+    new_embeddings = nn.Embedding(
+        new_num_tokens,
+        old_embedding_dim,
+        device=old_embeddings.weight.device,
+        dtype=old_embeddings.weight.dtype,
+    )
+    nn.init.normal_(new_embeddings.weight, std=0.02)
+    n = min(old_num_tokens, new_num_tokens)
+    new_embeddings.weight.data[:n, :] = old_embeddings.weight.data[:n, :]
+    model.backbone.embedding = new_embeddings
+
+    model.tie_weights()
+
 accelerator = Accelerator()
 wandb.init(mode="disabled")
 
@@ -52,6 +70,14 @@ model = MambaLMHeadModel.from_pretrained(
 # Load Tokenizer
 tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
 tokenizer.pad_token = tokenizer.eos_token
+
+# Add ChatML tokens to tokenizer and model
+tokenizer.add_tokens(["<PAD>"])
+tokenizer.add_tokens(["<|im_start|>"])
+tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
+tokenizer.pad_token = "<PAD>"
+tokenizer.eos_token="<|im_end|>"
+resize_token_embeddings(model, len(tokenizer))
 
 # Load dataset
 dataset_name="OpenAssistant/oasst_top1_2023-08-25"
