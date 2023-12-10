@@ -2,7 +2,7 @@
 
 # story-snippets.ipynb
 
-Notebook containing the code in the medium story about 🐍 [mamba](https://github.com/state-spaces/mamba).
+Notebook for the code snippets in [Mamba: A shallow dive](https://medium.com/@geronimo7/mamba-a-shallow-dive-into-a-new-architecture-for-llms-54c70ade5957)
 
 # finetune.py
 
