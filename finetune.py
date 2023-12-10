@@ -5,24 +5,38 @@ from datasets import load_dataset
 
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 
-accelerator = Accelerator()
+# monkey patch MambaLMHeadModel.forward 
+def forward_with_loss(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0, labels = None):
+    """
+    "position_ids" is just to be compatible with Transformer generation. We don't use it.
+    num_last_tokens: if > 0, only return the logits for the last n tokens
+    """
+    hidden_states = self.backbone(input_ids, inference_params=inference_params)
+    if num_last_tokens > 0:
+        hidden_states = hidden_states[:, -num_last_tokens:]
+    lm_logits = self.lm_head(hidden_states)
+    
+    # Source: https://github.com/huggingface/transformers/blob/80377eb018c077dba434bc8e7912bcaed3a64d09/src/transformers/models/llama/modeling_llama.py#L1196
+    from torch.nn import CrossEntropyLoss
+    if labels is not None:
+        logits = lm_logits
+        # Shift so that tokens < n predict n
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        # Flatten the tokens
+        loss_fct = CrossEntropyLoss()
+        # shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        shift_logits = shift_logits.view(-1, self.backbone.embedding.weight.size()[0])
+        shift_labels = shift_labels.view(-1)
+        # Enable model parallelism
+        shift_labels = shift_labels.to(shift_logits.device)
+        loss = loss_fct(shift_logits, shift_labels)
+        return (loss,)   
+    else:
+        CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+        return CausalLMOutput(logits=lm_logits)
+MambaLMHeadModel.forward=forward_with_loss
 
-wandb.init(mode="disabled")
-
-modelpath="state-spaces/mamba-1.4b"
-
-# Load model
-model = MambaLMHeadModel.from_pretrained(
-    modelpath,    
-    dtype=torch.bfloat16,
-    device="cuda",
-)
-
-# Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
-tokenizer.pad_token = tokenizer.eos_token
-
-# Add ChatML tokens to tokenizer and model
 def resize_token_embeddings(model, new_num_tokens):
     import torch.nn as nn
 
@@ -41,6 +55,23 @@ def resize_token_embeddings(model, new_num_tokens):
 
     model.tie_weights()
 
+accelerator = Accelerator()
+wandb.init(mode="disabled")
+
+modelpath="state-spaces/mamba-1.4b"
+
+# Load model
+model = MambaLMHeadModel.from_pretrained(
+    modelpath,    
+    dtype=torch.bfloat16,
+    device="cuda",
+)
+
+# Load Tokenizer
+tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
+tokenizer.pad_token = tokenizer.eos_token
+
+# Add ChatML tokens to tokenizer and model
 tokenizer.add_tokens(["<PAD>"])
 tokenizer.add_tokens(["<|im_start|>"])
 tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
@@ -99,45 +130,32 @@ run_name="{model}_{ds}_BS-{bs}_LR-{lr}".format(
     lr=lr,
     )
 
-# source: https://github.com/havenhq/mamba-chat/blob/main/trainer/mamba_trainer.py
-class MambaTrainer(Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
-        input_ids = inputs.pop("input_ids")
-        lm_logits = model(input_ids).logits
+args = TrainingArguments(
+    output_dir="out",
+    per_device_train_batch_size=bs,
+    per_device_eval_batch_size=bs,
+    evaluation_strategy="steps",
+    logging_steps=1,
+    eval_steps=steps_per_epoch,
+    save_steps=steps_per_epoch,
+    gradient_accumulation_steps=ga_steps,
+    num_train_epochs=epochs,
+    lr_scheduler_type="constant",
+    learning_rate=lr,
+    group_by_length=True,
+    bf16=True,
+    ddp_find_unused_parameters=False,
+    save_safetensors=False,
+    run_name=run_name
+)
 
-        labels = input_ids.to(lm_logits.device)
-        shift_logits = lm_logits[:, :-1, :].contiguous()
-        labels = labels[:, 1:].contiguous()
-
-        loss_fct = torch.nn.CrossEntropyLoss()
-        lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), labels.view(-1))
-
-        return lm_loss
-
-trainer = MambaTrainer(
+trainer = Trainer(
     model=model,
     tokenizer=tokenizer,
+    args=args,
     data_collator=collate,
     train_dataset=dataset_tokenized["train"],
     eval_dataset=dataset_tokenized["test"],
-    args=TrainingArguments(
-        output_dir="out",
-        per_device_train_batch_size=bs,
-        per_device_eval_batch_size=bs,
-        evaluation_strategy="steps",
-        logging_steps=1,
-        eval_steps=steps_per_epoch,
-        save_steps=steps_per_epoch,
-        gradient_accumulation_steps=ga_steps,
-        num_train_epochs=epochs,
-        lr_scheduler_type="constant",
-        learning_rate=lr,
-        group_by_length=True,
-        bf16=True,
-        ddp_find_unused_parameters=False,
-        save_safetensors=False,
-        run_name=run_name
-    )
 )
 
 trainer.train()
