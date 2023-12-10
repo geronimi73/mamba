@@ -5,6 +5,11 @@ from datasets import load_dataset
 
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 
+accelerator = Accelerator()
+wandb.init(mode="disabled")
+
+modelpath="state-spaces/mamba-1.4b"
+
 # monkey patch MambaLMHeadModel.forward 
 def forward_with_loss(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0, labels = None):
     """
@@ -37,6 +42,18 @@ def forward_with_loss(self, input_ids, position_ids=None, inference_params=None,
         return CausalLMOutput(logits=lm_logits)
 MambaLMHeadModel.forward=forward_with_loss
 
+# Load model
+model = MambaLMHeadModel.from_pretrained(
+    modelpath,    
+    dtype=torch.bfloat16,
+    device="cuda",
+)
+
+# Load Tokenizer
+tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
+tokenizer.pad_token = tokenizer.eos_token
+
+# Add ChatML tokens to tokenizer and model
 def resize_token_embeddings(model, new_num_tokens):
     import torch.nn as nn
 
@@ -55,23 +72,6 @@ def resize_token_embeddings(model, new_num_tokens):
 
     model.tie_weights()
 
-accelerator = Accelerator()
-wandb.init(mode="disabled")
-
-modelpath="state-spaces/mamba-1.4b"
-
-# Load model
-model = MambaLMHeadModel.from_pretrained(
-    modelpath,    
-    dtype=torch.bfloat16,
-    device="cuda",
-)
-
-# Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b") 
-tokenizer.pad_token = tokenizer.eos_token
-
-# Add ChatML tokens to tokenizer and model
 tokenizer.add_tokens(["<PAD>"])
 tokenizer.add_tokens(["<|im_start|>"])
 tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
@@ -129,6 +129,7 @@ run_name="{model}_{ds}_BS-{bs}_LR-{lr}".format(
     bs=bs,
     lr=lr,
     )
+run_name+="-ChatML"
 
 args = TrainingArguments(
     output_dir="out",
