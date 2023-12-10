@@ -6,9 +6,15 @@ from datasets import load_dataset
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 
 accelerator = Accelerator()
-wandb.init(mode="disabled")
+
+# wandb.init(mode="disabled")
 
 modelpath="state-spaces/mamba-1.4b"
+bs=4        # batch size
+ga_steps=1  # gradient acc. steps
+epochs=4
+lr=0.00005
+output_dir="./out"
 
 # monkey patch MambaLMHeadModel.forward 
 def forward_with_loss(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0, labels = None):
@@ -79,6 +85,9 @@ tokenizer.pad_token = "<PAD>"
 tokenizer.eos_token="<|im_end|>"
 resize_token_embeddings(model, len(tokenizer))
 
+# Save tokenizer
+tokenizer.save_pretrained(f"{output_dir}/tokenizer/")
+
 # Load dataset
 dataset_name="OpenAssistant/oasst_top1_2023-08-25"
 dataset=load_dataset(dataset_name)
@@ -117,12 +126,6 @@ def collate(elements):
     }
     return batch
 
-bs=4        # batch size
-ga_steps=1  # gradient acc. steps
-epochs=3
-steps_per_epoch=len(dataset_tokenized["train"])//(accelerator.state.num_processes*bs*ga_steps)
-lr=0.00005
-
 run_name="{model}_{ds}_BS-{bs}_LR-{lr}".format(
     model=modelpath.split("/")[1],
     ds=dataset_name.split("/")[1],
@@ -131,8 +134,10 @@ run_name="{model}_{ds}_BS-{bs}_LR-{lr}".format(
     )
 run_name+="-ChatML"
 
+steps_per_epoch=len(dataset_tokenized["train"])//(accelerator.state.num_processes*bs*ga_steps)
+
 args = TrainingArguments(
-    output_dir="out",
+    output_dir=output_dir,
     per_device_train_batch_size=bs,
     per_device_eval_batch_size=bs,
     evaluation_strategy="steps",
